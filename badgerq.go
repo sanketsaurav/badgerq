@@ -16,7 +16,6 @@ import (
 const GCDiscardRatio = 0.5
 
 var GCInterval = 1 * time.Minute
-var SyncInternal = 10 * time.Second
 
 // logging stuff copied from github.com/blueshift-labs/nsq/internal/lg
 
@@ -92,6 +91,7 @@ type badgerq struct {
 	bufferSize   int
 	buffer       chan []byte
 	idleWait     time.Duration
+	syncInterval time.Duration
 	stop         chan struct{}
 	gcStopped    chan struct{}
 	readStopped  chan struct{}
@@ -102,7 +102,7 @@ type badgerq struct {
 	emptyLock    sync.RWMutex
 }
 
-func New(name, dir string, bufferSize int, idleWait time.Duration, logger AppLogFunc,
+func New(name, dir string, bufferSize int, idleWait, syncInterval time.Duration, logger AppLogFunc,
 	keyExtractor func([]byte) ([]byte, error),
 	cutOffFunc func([]byte) bool) *badgerq {
 	if err := os.MkdirAll(dir, 0774); err != nil {
@@ -128,6 +128,7 @@ func New(name, dir string, bufferSize int, idleWait time.Duration, logger AppLog
 		bufferSize:   bufferSize,
 		buffer:       make(chan []byte, bufferSize),
 		idleWait:     idleWait,
+		syncInterval: syncInterval,
 		stop:         make(chan struct{}),
 		gcStopped:    make(chan struct{}),
 		readStopped:  make(chan struct{}),
@@ -373,7 +374,7 @@ func (q *badgerq) syncLoop() {
 		select {
 		case <-q.stop:
 			return
-		case <-time.After(SyncInternal):
+		case <-time.After(q.syncInterval):
 			if err := q.db.Sync(); err != nil {
 				q.logger(ERROR, "BADGERQ(%s) failed to sync badgerdb - %s", q.name, err)
 			}

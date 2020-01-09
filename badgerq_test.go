@@ -6,6 +6,7 @@ import (
 	"fmt"
 	uuid "github.com/satori/go.uuid"
 	"io"
+	"math/rand"
 	"os"
 	"sync"
 	"testing"
@@ -88,6 +89,10 @@ var TestLogger = func(lvl LogLevel, f string, args ...interface{}) {
 	fmt.Println(msg)
 }
 
+var BenchLogger = func(lvl LogLevel, f string, args ...interface{}) {
+	return
+}
+
 func TestNSQKeyExtractor(t *testing.T) {
 	body := []byte("hello world")
 	ts := time.Now()
@@ -109,7 +114,7 @@ func TestNSQKeyExtractor(t *testing.T) {
 	}
 }
 
-func NewMessageData(t *testing.T, id uuid.UUID, data []byte, ts time.Time) []byte {
+func NewMessageData(t testInterface, id uuid.UUID, data []byte, ts time.Time) []byte {
 	msg := NewMessage(MessageID(id), data, ts)
 	var buf bytes.Buffer
 
@@ -129,12 +134,23 @@ func NewDataBlob(size int) []byte {
 	return buf.Bytes()
 }
 
+type testInterface interface {
+	Fatalf(format string, args ...interface{})
+	Errorf(format string, args ...interface{})
+}
+
 func TestBadgerQ(t *testing.T) {
+	testBadgerQ(t, 10, 500000, 200, 100, 50, 180, 5*time.Millisecond, 5*time.Millisecond, TestLogger)
+}
+
+func testBadgerQ(t testInterface,
+	bufSize, msgSize, totalCurWrites, totalFutureWrites, moreFutureMessages, totalCurReads int,
+	idleWait, syncInterval time.Duration,
+	logger func(lvl LogLevel, f string, args ...interface{})) {
 	os.RemoveAll("tmp/test")
 	defer os.RemoveAll("tmp/test")
 
-	idleWait := 5 * time.Millisecond
-	q := New("test", "tmp/test", 10, idleWait, TestLogger, NSQKeyExtractor, NSQCutOffFunc)
+	q := New("test", "tmp/test", bufSize, idleWait, syncInterval, logger, NSQKeyExtractor, NSQCutOffFunc)
 	if q == nil {
 		t.Fatalf("failed to start badgerq")
 	}
@@ -146,13 +162,9 @@ func TestBadgerQ(t *testing.T) {
 	curWritesDone := make(chan struct{})
 	futureWritesDone := make(chan struct{})
 	curReadsDone := make(chan struct{})
-	msgSize := 500000 // 0.5MB
-	totalCurWrites := 200
-	totalFutureWrites := 100
-	totalCurReads := 180
 	futureTime := time.Now().Add(30 * time.Second)
 
-	TestLogger(INFO, "start writing future messages")
+	logger(INFO, "start writing future messages")
 	go func() {
 		var futureWriteWg sync.WaitGroup
 		futureWriteWg.Add(totalFutureWrites)
@@ -169,7 +181,7 @@ func TestBadgerQ(t *testing.T) {
 		close(futureWritesDone)
 	}()
 
-	TestLogger(INFO, "start writing current messages")
+	logger(INFO, "start writing current messages")
 	go func() {
 		var curWriteWg sync.WaitGroup
 		curWriteWg.Add(totalCurWrites)
@@ -187,7 +199,7 @@ func TestBadgerQ(t *testing.T) {
 	}()
 
 	// all cur reads should be before future timestamp
-	TestLogger(INFO, "start reading current messages")
+	logger(INFO, "start reading current messages")
 	go func() {
 		msgs := map[string]bool{}
 		for i := 0; i < totalCurReads; i++ {
@@ -214,11 +226,11 @@ func TestBadgerQ(t *testing.T) {
 	}()
 
 	<-futureWritesDone
-	TestLogger(INFO, "finish writing future messages")
+	logger(INFO, "finish writing future messages")
 	<-curWritesDone
-	TestLogger(INFO, "finish writing current messages")
+	logger(INFO, "finish writing current messages")
 	<-curReadsDone
-	TestLogger(INFO, "finish reading current messages")
+	logger(INFO, "finish reading current messages")
 
 	// wait for read loop to decrease the counter for consumed messages
 	<-time.After(time.Second)
@@ -236,14 +248,14 @@ func TestBadgerQ(t *testing.T) {
 	}
 
 	// read back the depth should be the same as it was before close
-	q = New("test", "tmp/test", 5, idleWait, TestLogger, NSQKeyExtractor, NSQCutOffFunc)
+	q = New("test", "tmp/test", bufSize, idleWait, syncInterval, logger, NSQKeyExtractor, NSQCutOffFunc)
 	curDepth = q.Depth()
 	if curDepth != expectedDepth {
 		t.Fatalf("badgerq depth should be %d instead of %d", expectedDepth, curDepth)
 	}
 
 	// flush out the rest of cur reads
-	TestLogger(INFO, "flushing rest of current messages")
+	logger(INFO, "flushing rest of current messages")
 	msgs := map[string]bool{}
 	for i := 0; i < totalCurWrites-totalCurReads; i++ {
 		msg := <-q.ReadChan()
@@ -266,7 +278,7 @@ func TestBadgerQ(t *testing.T) {
 	}
 
 	// should halt at reading future message
-	TestLogger(INFO, "halt at reading future messages")
+	logger(INFO, "halt at reading future messages")
 	select {
 	case <-time.After(2 * idleWait):
 	case <-q.ReadChan():
@@ -283,8 +295,7 @@ func TestBadgerQ(t *testing.T) {
 	}
 
 	// should still be OK to write for both current and future
-	TestLogger(INFO, "writing more future messages")
-	moreFutureMessages := 10
+	logger(INFO, "writing more future messages")
 	for i := 0; i < moreFutureMessages; i++ {
 		msg := NewMessageData(t, uuid.NewV4(), NewDataBlob(msgSize), futureTime)
 		if err := q.Put(msg); err != nil {
@@ -292,14 +303,14 @@ func TestBadgerQ(t *testing.T) {
 		}
 	}
 
-	TestLogger(INFO, "writing more current messages")
+	logger(INFO, "writing more current messages")
 	msg := NewMessageData(t, uuid.NewV4(), NewDataBlob(msgSize), time.Now())
 	if err := q.Put(msg); err != nil {
 		t.Fatalf("error putting data to badgerq: %s", err)
 	}
 
 	// should be able to read for current message
-	TestLogger(INFO, "reading more current messages")
+	logger(INFO, "reading more current messages")
 	msg = <-q.ReadChan()
 	key, err := NSQKeyExtractor(msg)
 	if err != nil {
@@ -310,7 +321,7 @@ func TestBadgerQ(t *testing.T) {
 	}
 
 	// should halt at reading future message
-	TestLogger(INFO, "halt at reading future messages")
+	logger(INFO, "halt at reading future messages")
 	select {
 	case <-time.After(2 * idleWait):
 	case <-q.ReadChan():
@@ -328,9 +339,80 @@ func TestBadgerQ(t *testing.T) {
 	}
 
 	// reopen it and see if the data is emptied
-	q = New("test", "tmp/test", 5, idleWait, TestLogger, NSQKeyExtractor, NSQCutOffFunc)
+	q = New("test", "tmp/test", bufSize, idleWait, syncInterval, logger, NSQKeyExtractor, NSQCutOffFunc)
 	defer q.Delete()
 	if q.Depth() != 0 {
 		t.Fatalf("empty badgerq should have depth of 0")
 	}
+}
+
+func BenchmarkBadgerQ(b *testing.B) {
+	for n := 0; n < b.N; n++ {
+		bufSize := rand.Intn(1000)
+		msgSize := rand.Intn(200000) + 400000     // 0.4MB - 0.6MB
+		totalFutureWrites := rand.Intn(100) + 100 // 100 - 200
+		totalCurWrites := rand.Intn(300) + 100    // 100 - 400
+		moreFutureMessages := rand.Intn(50) + 50  // 50 - 100
+		totalCurReads := rand.Intn(totalCurWrites)
+		idleWait := time.Duration(rand.Intn(900)+100) * time.Millisecond     // 100ms - 1s
+		syncInterval := time.Duration(rand.Intn(900)+100) * time.Millisecond // 100ms - 1s
+
+		testBadgerQ(b, bufSize, msgSize, totalCurWrites, totalFutureWrites, moreFutureMessages, totalCurReads, idleWait, syncInterval, BenchLogger)
+	}
+}
+
+func benchmarkBadgerQPut(b *testing.B, msgSize int) {
+	os.RemoveAll("tmp/test")
+	defer os.RemoveAll("tmp/test")
+
+	q := New("test", "tmp/test", 1000, 50*time.Millisecond, 60*time.Second, BenchLogger, NSQKeyExtractor, NSQCutOffFunc)
+	defer q.Delete()
+
+	go func() {
+		for _ = range q.ReadChan() {
+		}
+	}()
+
+	msgBlob := NewDataBlob(msgSize)
+	for n := 0; n < b.N; n++ {
+		msg := NewMessageData(b, uuid.NewV4(), msgBlob, time.Now())
+		if err := q.Put(msg); err != nil {
+			b.Errorf("error putting data to badgerq: %s", err)
+		}
+	}
+}
+
+// 1kb
+func BenchmarkBadgerQPut1024(b *testing.B) {
+	benchmarkBadgerQPut(b, 1024)
+}
+
+// 5kb
+func BenchmarkBadgerQPut5120(b *testing.B) {
+	benchmarkBadgerQPut(b, 5120)
+}
+
+// 10kb
+func BenchmarkBadgerQPut10240(b *testing.B) {
+	benchmarkBadgerQPut(b, 10240)
+}
+
+// 50kb
+func BenchmarkBadgerQPut51200(b *testing.B) {
+	benchmarkBadgerQPut(b, 51200)
+}
+
+// 100kb
+func BenchmarkBadgerQPut102400(b *testing.B) {
+	benchmarkBadgerQPut(b, 102400)
+}
+
+// 500kb
+func BenchmarkBadgerQPut512000(b *testing.B) {
+	benchmarkBadgerQPut(b, 512000)
+}
+
+// 1MB
+func BenchmarkBadgerQPut1024000(b *testing.B) {
+	benchmarkBadgerQPut(b, 1024000)
 }
