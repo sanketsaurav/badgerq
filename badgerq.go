@@ -2,8 +2,8 @@ package badgerq
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"os"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -103,9 +103,14 @@ type badgerq struct {
 func New(name, dir string, bufferSize int, idleWait time.Duration, logger AppLogFunc,
 	keyExtractor func([]byte) ([]byte, error),
 	cutOffFunc func([]byte) bool) *badgerq {
+	if err := os.MkdirAll(dir, 0774); err != nil {
+		logger(ERROR, "BADGERQ(%s) failed to open - %s", name, err)
+		return nil
+	}
+
 	db, err := badger.Open(
 		badger.DefaultOptions(dir).
-			WithSyncWrites(false).
+			WithSyncWrites(true).
 			WithTruncate(true).
 			WithLogger(logger))
 	if err != nil {
@@ -139,7 +144,7 @@ func New(name, dir string, bufferSize int, idleWait time.Duration, logger AppLog
 	go q.gcLoop()
 	go q.scanLoop()
 	go q.readLoop()
-	logger(INFO, "BADGERQ(%s) successfully opened", name, err)
+	logger(INFO, "BADGERQ(%s) successfully opened", name)
 	return q
 }
 
@@ -179,11 +184,13 @@ func (q *badgerq) readLoop() {
 	defer close(q.readStopped)
 
 	var data []byte
-	if data != nil {
-		if err := q.Put(data); err != nil {
-			q.logger(ERROR, "BADGERQ(%s) failed to put back unconsumed data - %s", q.name, err)
+	defer func() {
+		if data != nil {
+			if err := q.Put(data); err != nil {
+				q.logger(ERROR, "BADGERQ(%s) failed to put back unconsumed data - %s", q.name, err)
+			}
 		}
-	}
+	}()
 
 	for {
 		select {
@@ -194,20 +201,7 @@ func (q *badgerq) readLoop() {
 			case <-q.stop:
 				return
 			case q.readChan <- data:
-				err := q.db.Update(func(tx *badger.Txn) error {
-					if key, err := q.keyExtractor(data); err != nil {
-						return err
-					} else {
-						return tx.Delete(key)
-					}
-				})
-
-				if err != nil {
-					q.logger(ERROR, "BADGERQ(%s) failed to delete consumed data - %s", q.name, err)
-				} else {
-					atomic.AddInt64(&q.depth, -1)
-				}
-
+				atomic.AddInt64(&q.depth, -1)
 				data = nil
 			}
 		}
@@ -217,15 +211,12 @@ func (q *badgerq) readLoop() {
 func (q *badgerq) scanLoop() {
 	defer close(q.scanStopped)
 
-	var errStopped = errors.New("badgerpq is stopped")
-	var errBufferFull = errors.New("badgerpq buffer is full")
-
 	for {
 		select {
 		case <-q.stop:
 			return
-		default:
-			q.db.View(func(txn *badger.Txn) error {
+		case <-time.After(q.idleWait):
+			q.db.Update(func(txn *badger.Txn) error {
 				opts := badger.DefaultIteratorOptions
 				opts.PrefetchSize = q.bufferSize
 				it := txn.NewIterator(opts)
@@ -233,32 +224,33 @@ func (q *badgerq) scanLoop() {
 
 				for it.Rewind(); it.Valid(); it.Next() {
 					item := it.Item()
-					if q.cutOffFunc(item.Key()) {
-						select {
-						case <-q.stop:
-						case <-time.After(q.idleWait):
-						}
+					key := item.KeyCopy(nil)
+					if q.cutOffFunc(key) {
 						break
 					}
 
-					err := item.Value(func(data []byte) error {
+					if data, err := item.ValueCopy(nil); err != nil {
+						q.logger(ERROR, "BADGERQ(%s) error reading data - %s", q.name, err)
+						break
+					} else {
 						select {
 						case <-q.stop:
-							return errStopped
-						case <-time.After(q.idleWait):
-							return errBufferFull
-						case q.buffer <- data:
 							return nil
+						case <-time.After(q.idleWait):
+							return nil
+						case q.buffer <- data:
+							if err := txn.Delete(key); err != nil {
+								q.logger(ERROR, "BADGERQ(%s) failed to delete buffered data - %s", q.name, err)
+								return nil
+							}
 						}
-					})
-
-					if err == errStopped || err == errBufferFull {
-						break
 					}
 				}
 
 				return nil
 			})
+
+			// q.db.Sync()
 		}
 	}
 }
@@ -289,6 +281,7 @@ func (q *badgerq) Close() error {
 	<-q.readStopped
 	<-q.gcStopped
 	close(q.buffer)
+	close(q.readChan)
 
 	wb := q.db.NewWriteBatch()
 	for data := range q.buffer {
@@ -307,6 +300,10 @@ func (q *badgerq) Close() error {
 	}
 	wb.Cancel()
 
+	// if err := q.db.Sync(); err != nil {
+	// 	q.logger(ERROR, "BADGERQ(%s) failed to sync data to disk - %s", q.name, err)
+	// }
+
 	q.logger(INFO, "BADGERQ(%s) closed", q.name)
 	return q.db.Close()
 }
@@ -316,6 +313,8 @@ func (q *badgerq) Delete() error {
 	<-q.scanStopped
 	<-q.readStopped
 	<-q.gcStopped
+	close(q.buffer)
+	close(q.readChan)
 
 	err := q.db.DropAll()
 	_err := q.db.Close()
@@ -365,6 +364,7 @@ func (q *badgerq) Empty() error {
 }
 
 func (q *badgerq) retrieveMetaData() error {
+	atomic.StoreInt64(&q.depth, 0)
 	stream := q.db.NewStream()
 	stream.NumGo = runtime.NumCPU()
 	stream.LogPrefix = fmt.Sprintf("BADGERQ(%s) Streaming: ", q.name)
