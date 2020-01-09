@@ -16,6 +16,7 @@ import (
 const GCDiscardRatio = 0.5
 
 var GCInterval = 1 * time.Minute
+var SyncInternal = 10 * time.Second
 
 // logging stuff copied from github.com/blueshift-labs/nsq/internal/lg
 
@@ -95,6 +96,7 @@ type badgerq struct {
 	gcStopped    chan struct{}
 	readStopped  chan struct{}
 	scanStopped  chan struct{}
+	syncStopped  chan struct{}
 	keyExtractor func([]byte) ([]byte, error)
 	cutOffFunc   func([]byte) bool
 	emptyLock    sync.RWMutex
@@ -130,6 +132,7 @@ func New(name, dir string, bufferSize int, idleWait time.Duration, logger AppLog
 		gcStopped:    make(chan struct{}),
 		readStopped:  make(chan struct{}),
 		scanStopped:  make(chan struct{}),
+		syncStopped:  make(chan struct{}),
 		keyExtractor: keyExtractor,
 		cutOffFunc:   cutOffFunc,
 	}
@@ -144,6 +147,7 @@ func New(name, dir string, bufferSize int, idleWait time.Duration, logger AppLog
 	go q.gcLoop()
 	go q.scanLoop()
 	go q.readLoop()
+	go q.syncLoop()
 	logger(INFO, "BADGERQ(%s) successfully opened", name)
 	return q
 }
@@ -249,8 +253,6 @@ func (q *badgerq) scanLoop() {
 
 				return nil
 			})
-
-			// q.db.Sync()
 		}
 	}
 }
@@ -280,6 +282,7 @@ func (q *badgerq) Close() error {
 	<-q.scanStopped
 	<-q.readStopped
 	<-q.gcStopped
+	<-q.syncStopped
 	close(q.buffer)
 	close(q.readChan)
 
@@ -300,10 +303,6 @@ func (q *badgerq) Close() error {
 	}
 	wb.Cancel()
 
-	// if err := q.db.Sync(); err != nil {
-	// 	q.logger(ERROR, "BADGERQ(%s) failed to sync data to disk - %s", q.name, err)
-	// }
-
 	q.logger(INFO, "BADGERQ(%s) closed", q.name)
 	return q.db.Close()
 }
@@ -313,6 +312,7 @@ func (q *badgerq) Delete() error {
 	<-q.scanStopped
 	<-q.readStopped
 	<-q.gcStopped
+	<-q.syncStopped
 	close(q.buffer)
 	close(q.readChan)
 
@@ -331,6 +331,7 @@ func (q *badgerq) Empty() error {
 	<-q.scanStopped
 	<-q.readStopped
 	<-q.gcStopped
+	<-q.syncStopped
 	close(q.buffer)
 
 	q.buffer = make(chan []byte, q.bufferSize)
@@ -338,6 +339,7 @@ func (q *badgerq) Empty() error {
 	q.gcStopped = make(chan struct{})
 	q.readStopped = make(chan struct{})
 	q.scanStopped = make(chan struct{})
+	q.syncStopped = make(chan struct{})
 
 	q.emptyLock.Lock()
 	defer q.emptyLock.Unlock()
@@ -355,12 +357,28 @@ func (q *badgerq) Empty() error {
 	go q.gcLoop()
 	go q.scanLoop()
 	go q.readLoop()
+	go q.syncLoop()
 	q.logger(INFO, "BADGERQ(%s) emptied", q.name)
 
 	if err != nil {
 		return err
 	}
 	return _err
+}
+
+func (q *badgerq) syncLoop() {
+	defer close(q.syncStopped)
+
+	for {
+		select {
+		case <-q.stop:
+			return
+		case <-time.After(SyncInternal):
+			if err := q.db.Sync(); err != nil {
+				q.logger(ERROR, "BADGERQ(%s) failed to sync badgerdb - %s", q.name, err)
+			}
+		}
+	}
 }
 
 func (q *badgerq) retrieveMetaData() error {
