@@ -139,10 +139,6 @@ type testInterface interface {
 	Errorf(format string, args ...interface{})
 }
 
-func TestBadgerQ(t *testing.T) {
-	testBadgerQ(t, 10, 500000, 200, 100, 50, 180, 5*time.Millisecond, 5*time.Millisecond, TestLogger)
-}
-
 func testBadgerQ(t testInterface,
 	bufSize, msgSize, totalCurWrites, totalFutureWrites, moreFutureMessages, totalCurReads int,
 	idleWait, syncInterval time.Duration,
@@ -346,8 +342,8 @@ func testBadgerQ(t testInterface,
 	}
 }
 
-func BenchmarkBadgerQ(b *testing.B) {
-	for n := 0; n < b.N; n++ {
+func TestBadgerQ(t *testing.T) {
+	for n := 0; n < 50; n++ {
 		bufSize := rand.Intn(1000)
 		msgSize := rand.Intn(200000) + 400000     // 0.4MB - 0.6MB
 		totalFutureWrites := rand.Intn(100) + 100 // 100 - 200
@@ -357,7 +353,7 @@ func BenchmarkBadgerQ(b *testing.B) {
 		idleWait := time.Duration(rand.Intn(900)+100) * time.Millisecond     // 100ms - 1s
 		syncInterval := time.Duration(rand.Intn(900)+100) * time.Millisecond // 100ms - 1s
 
-		testBadgerQ(b, bufSize, msgSize, totalCurWrites, totalFutureWrites, moreFutureMessages, totalCurReads, idleWait, syncInterval, BenchLogger)
+		testBadgerQ(t, bufSize, msgSize, totalCurWrites, totalFutureWrites, moreFutureMessages, totalCurReads, idleWait, syncInterval, TestLogger)
 	}
 }
 
