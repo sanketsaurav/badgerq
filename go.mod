@@ -1,4 +1,4 @@
-module github.com/blueshift-labs/badgerq/v1
+module github.com/blueshift-labs/badgerq
 
 go 1.13
 
