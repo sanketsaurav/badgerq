@@ -74,7 +74,7 @@ func (l AppLogFunc) Debugf(msg string, args ...interface{}) {
 // logging stuff copied from github.com/blueshift-labs/nsq/nsqd/backend_queue.go
 type Interface interface {
 	Put([]byte) error
-	ReadChan() <-chan []byte // this is expected to be an *unbuffered* channel
+	ReadChan() chan []byte // this is expected to be an *unbuffered* channel
 	Close() error
 	Delete() error
 	Depth() int64
@@ -88,7 +88,7 @@ type badgerq struct {
 	db           *badger.DB
 	logger       AppLogFunc
 	readChan     chan []byte
-	bufferSize   int
+	bufferSize   int64
 	buffer       chan []byte
 	idleWait     time.Duration
 	syncInterval time.Duration
@@ -102,7 +102,7 @@ type badgerq struct {
 	emptyLock    sync.RWMutex
 }
 
-func New(name, dir string, bufferSize int, idleWait, syncInterval time.Duration, logger AppLogFunc,
+func New(name, dir string, bufferSize int64, idleWait, syncInterval time.Duration, logger AppLogFunc,
 	keyExtractor func([]byte) ([]byte, error),
 	cutOffFunc func([]byte) bool) *badgerq {
 	if err := os.MkdirAll(dir, 0774); err != nil {
@@ -181,7 +181,7 @@ func (q *badgerq) Put(data []byte) (err error) {
 	})
 }
 
-func (q *badgerq) ReadChan() <-chan []byte {
+func (q *badgerq) ReadChan() chan []byte {
 	return q.readChan
 }
 
@@ -223,7 +223,7 @@ func (q *badgerq) scanLoop() {
 		case <-time.After(q.idleWait):
 			q.db.Update(func(txn *badger.Txn) error {
 				opts := badger.DefaultIteratorOptions
-				opts.PrefetchSize = q.bufferSize
+				opts.PrefetchSize = int(q.bufferSize)
 				it := txn.NewIterator(opts)
 				defer it.Close()
 

@@ -140,7 +140,7 @@ type testInterface interface {
 }
 
 func testBadgerQ(t testInterface,
-	bufSize, msgSize, totalCurWrites, totalFutureWrites, moreFutureMessages, totalCurReads int,
+	bufSize int64, msgSize, totalCurWrites, totalFutureWrites, moreFutureMessages, totalCurReads int,
 	idleWait, syncInterval time.Duration,
 	logger func(lvl LogLevel, f string, args ...interface{})) {
 	os.RemoveAll("tmp/test")
@@ -344,7 +344,7 @@ func testBadgerQ(t testInterface,
 
 func TestBadgerQ(t *testing.T) {
 	for n := 0; n < 50; n++ {
-		bufSize := rand.Intn(1000)
+		bufSize := rand.Int63n(1000)
 		msgSize := rand.Intn(200000) + 400000     // 0.4MB - 0.6MB
 		totalFutureWrites := rand.Intn(100) + 100 // 100 - 200
 		totalCurWrites := rand.Intn(300) + 100    // 100 - 400
