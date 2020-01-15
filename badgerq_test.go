@@ -78,7 +78,8 @@ var NSQKeyExtractor = func(data []byte) ([]byte, error) {
 		return nil, fmt.Errorf("invalid message buffer size (%d)", len(data))
 	}
 
-	timestamp := data[:8]
+	timestamp := make([]byte, 8)
+	copy(timestamp, data[:8])
 	messageID := data[10 : 10+MsgIDLength]
 
 	return append(timestamp, messageID...), nil
