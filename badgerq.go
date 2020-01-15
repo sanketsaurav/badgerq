@@ -105,6 +105,7 @@ type badgerq struct {
 func New(name, dir string, bufferSize int64, idleWait, syncInterval time.Duration, logger AppLogFunc,
 	keyExtractor func([]byte) ([]byte, error),
 	cutOffFunc func([]byte) bool) *badgerq {
+	dir = dir + ".badgerq"
 	if err := os.MkdirAll(dir, 0774); err != nil {
 		logger(ERROR, "BADGERQ(%s) failed to open - %s", name, err)
 		return nil
