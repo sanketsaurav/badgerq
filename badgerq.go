@@ -113,7 +113,7 @@ func New(name, dir string, bufferSize int64, idleWait, syncInterval time.Duratio
 
 	db, err := badger.Open(
 		badger.DefaultOptions(dir).
-			WithSyncWrites(true).
+			WithSyncWrites(false).
 			WithTruncate(true).
 			WithLogger(logger))
 	if err != nil {
