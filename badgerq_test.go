@@ -376,6 +376,7 @@ func benchmarkBadgerQPut(b *testing.B, msgSize int) {
 		if err := q.Put(msg); err != nil {
 			b.Errorf("error putting data to badgerq: %s", err)
 		}
+		b.SetBytes(int64(len(msg)))
 	}
 }
 
@@ -412,4 +413,73 @@ func BenchmarkBadgerQPut512000(b *testing.B) {
 // 1MB
 func BenchmarkBadgerQPut1024000(b *testing.B) {
 	benchmarkBadgerQPut(b, 1024000)
+}
+
+func benchmarkBadgerQRead(b *testing.B, msgSize int) {
+	os.RemoveAll("tmp/test")
+	defer os.RemoveAll("tmp/test")
+
+	q := New("test", "tmp/test", 1000, 50*time.Millisecond, 60*time.Second, BenchLogger, NSQKeyExtractor, NSQCutOffFunc)
+	defer q.Delete()
+
+	msgBlob := NewDataBlob(msgSize)
+	now := time.Now()
+	stop := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				msg := NewMessageData(b, uuid.NewV4(), msgBlob, now)
+				q.Put(msg)
+			}
+		}
+	}()
+
+	for n := 0; n < b.N; n++ {
+		data := <-q.ReadChan()
+		b.SetBytes(int64(len(data)))
+	}
+
+	close(stop)
+	<-stopped
+}
+
+// 1kb
+func BenchmarkBadgerQRead1024(b *testing.B) {
+	benchmarkBadgerQRead(b, 1024)
+}
+
+// 5kb
+func BenchmarkBadgerQRead5120(b *testing.B) {
+	benchmarkBadgerQRead(b, 5120)
+}
+
+// 10kb
+func BenchmarkBadgerQRead10240(b *testing.B) {
+	benchmarkBadgerQRead(b, 10240)
+}
+
+// 50kb
+func BenchmarkBadgerQRead51200(b *testing.B) {
+	benchmarkBadgerQRead(b, 51200)
+}
+
+// 100kb
+func BenchmarkBadgerQRead102400(b *testing.B) {
+	benchmarkBadgerQRead(b, 102400)
+}
+
+// 500kb
+func BenchmarkBadgerQRead512000(b *testing.B) {
+	benchmarkBadgerQRead(b, 512000)
+}
+
+// 1MB
+func BenchmarkBadgerQRead1024000(b *testing.B) {
+	benchmarkBadgerQRead(b, 1024000)
 }
